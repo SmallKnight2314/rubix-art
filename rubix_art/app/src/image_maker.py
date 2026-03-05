@@ -94,7 +94,7 @@ class ImageMaker:
             sticker_padding=2,      # thin dark border around each sticker
             cube_padding=6,         # thicker border around each full cube
             padding_color=(40, 40, 40),  # dark grey
-            background_color=(220, 220, 220)
+            background_color=(5, 5, 5)
         )
 
         if output_path is None:
@@ -123,7 +123,7 @@ if __name__ == "__main__":
             # Example: very clean look (recommended for small mosaics)
             grid_width_cube=2,
             grid_width_sticker=0,
-            grid_color=(100, 100, 100),
+            grid_color=(200, 200, 200),
         )
         print("Done. Output:", result_path)
     except Exception as e:
