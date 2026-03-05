@@ -79,7 +79,10 @@ class ImageMaker:
         mosaic_structure = splitter.split(self.scaled_image, self.metadata)
 
         # Paint – now with original + metadata
-        painter = self.painter_class(palette=palette)
+        #swaps = {"Blue": "Green", "Green": "Blue"}, {"Green": "White", "White": "Green"},
+        swaps = False
+
+        painter = self.painter_class(palette=None, color_swaps=swaps)
         colored_mosaic = painter.paint(
             mosaic_structure=mosaic_structure,
             original_image=original_image,
