@@ -1,148 +1,96 @@
 # src/assembler/builder.py
 """
-Builder – Reassembles the colored mosaic structure into a final blueprint image.
-
-Creates a large image where each sticker is a solid-colored rectangle,
-and optionally draws grid lines to show cube and sticker boundaries.
+Builder – Creates a blueprint where:
+- Each sticker has thin dark padding around it (like cube plastic edges)
+- Each full cube (3×3 / 4×4 / … block) has thicker padding around it
+No lines drawn on top → all separation comes from padding (natural look)
 """
 
 from typing import List, Dict, Any, Optional, Tuple
-import numpy as np
 from PIL import Image, ImageDraw
 
 
 class Builder:
-    """
-    Reconstructs the final blueprint from the colored mosaic data.
-
-    Main method:
-        .build(colored_mosaic, metadata, draw_grid_lines=True, ...)
-    """
-
     def __init__(self):
-        # Default visual style – can be overridden via parameters
-        self.default_grid_color = (40, 40, 40)      # dark gray
-        self.default_grid_width_cube = 1            # thicker lines between cubes
-        self.default_grid_width_sticker = 1         # thin lines between stickers
+        self.default_background = (255, 255, 255)
+        self.default_sticker_padding = 2          # thin padding around each sticker
+        self.default_cube_padding    = 6          # thicker padding around whole cube
+        self.default_padding_color   = (40, 40, 40)  # dark grey
 
     def build(
         self,
         colored_mosaic: List[List[Dict]],
         metadata: Dict[str, Any],
-        draw_grid_lines: bool = True,
-        grid_color: Tuple[int, int, int] = None,
-        grid_width_cube: Optional[int] = None,
-        grid_width_sticker: Optional[int] = None,
-        background_color: Tuple[int, int, int] = (255, 255, 255),
+        background_color: Tuple[int, int, int] = None,
+        
+        # Padding controls
+        sticker_padding: int = None,
+        cube_padding: int = None,
+        padding_color: Tuple[int, int, int] = None,
     ) -> Image.Image:
-        """
-        Creates the final blueprint image.
-
-        Args:
-            colored_mosaic:     Nested structure from Painter (with assigned_color)
-            metadata:           From Scaler – must contain 'sticker_grid'
-            draw_grid_lines:    Whether to draw cube/sticker borders
-            grid_color:         RGB tuple for grid lines (default: dark gray)
-            grid_width_cube:    Thickness of lines between cubes
-            grid_width_sticker: Thickness of lines between stickers inside a cube
-            background_color:   Color of any potential padding (usually white)
-
-        Returns:
-            PIL.Image – the complete blueprint
-        """
-        # ── Extract dimensions from metadata ─────────────────────────────────
         stickers_w, stickers_h = metadata["sticker_grid"]
-        sticker_px_size = metadata.get("sticker_size_px") or (
-            stickers_w // metadata["num_cubes"][0]
-        )
+        num_cubes_w, num_cubes_h = metadata["num_cubes"]
+        n = metadata.get("stickers_per_cube", 3)
 
-        # ── Create blank canvas ───────────────────────────────────────────────
-        final_img = Image.new(
-            "RGB",
-            (stickers_w, stickers_h),
-            color=background_color
-        )
+        sticker_size = stickers_w // (num_cubes_w * n)
+        if sticker_size * num_cubes_w * n != stickers_w or sticker_size * num_cubes_h * n != stickers_h:
+            raise ValueError("Sticker grid not divisible by cubes")
+
+        # Use defaults or overrides
+        bg_color       = background_color or self.default_background
+        pad_sticker    = sticker_padding if sticker_padding is not None else self.default_sticker_padding
+        pad_cube       = cube_padding    if cube_padding    is not None else self.default_cube_padding
+        pad_color      = padding_color   if padding_color   is not None else self.default_padding_color
+
+        # ── Calculate total canvas size with padding ─────────────────────────
+        total_sticker_pad_w = (num_cubes_w * n - 1) * pad_sticker + num_cubes_w * pad_cube * 2
+        total_sticker_pad_h = (num_cubes_h * n - 1) * pad_sticker + num_cubes_h * pad_cube * 2
+
+        canvas_w = stickers_w + total_sticker_pad_w + pad_cube * 2   # extra outer padding
+        canvas_h = stickers_h + total_sticker_pad_h + pad_cube * 2
+
+        final_img = Image.new("RGB", (canvas_w, canvas_h), color=bg_color)
         draw = ImageDraw.Draw(final_img)
 
-        # Use provided or default grid styles
-        grid_color = grid_color or self.default_grid_color
-        gw_cube = grid_width_cube or self.default_grid_width_cube
-        gw_sticker = grid_width_sticker or self.default_grid_width_sticker
+        # ── Place each sticker with padding ──────────────────────────────────
+        filled = 0
+        current_y = pad_cube  # start with outer cube padding
 
-        # ── Fill each sticker with its assigned color ────────────────────────
-        for cube_row in colored_mosaic:
-            for cube in cube_row:
-                for sticker_row in cube["stickers"]:
-                    for sticker in sticker_row:
-                        color = sticker.get("assigned_color")
-                        if color is None:
-                            # Fallback if something went wrong upstream
-                            color = (200, 200, 200)  # light gray warning color
+        for cube_r in range(num_cubes_h):
+            current_x = pad_cube
 
-                        # Get pixel coordinates
-                        x1, y1, x2, y2 = sticker["pixel_region"]
+            # Add cube padding between cube rows (except first)
+            if cube_r > 0:
+                current_y += pad_cube
 
-                        # Fill rectangle with solid color
-                        draw.rectangle(
-                            [x1, y1, x2-1, y2-1],   # -1 to avoid overlapping lines
-                            fill=color
-                        )
+            for cube_c in range(num_cubes_w):
+                cube = colored_mosaic[cube_r][cube_c]
 
-        # ── Optional: draw grid lines ─────────────────────────────────────────
-        if draw_grid_lines:
-            # Vertical lines
-            for col in range(metadata["num_cubes"][0] + 1):
-                x = col * (stickers_w // metadata["num_cubes"][0])
-                is_cube_boundary = (col % metadata["stickers_per_cube"] == 0)
-                width = gw_cube if is_cube_boundary else gw_sticker
-                draw.line(
-                    [(x, 0), (x, stickers_h)],
-                    fill=grid_color,
-                    width=width
-                )
+                # Add cube padding between cubes horizontally (except first)
+                if cube_c > 0:
+                    current_x += pad_cube
 
-            # Horizontal lines
-            for row in range(metadata["num_cubes"][1] + 1):
-                y = row * (stickers_h // metadata["num_cubes"][1])
-                is_cube_boundary = (row % metadata["stickers_per_cube"] == 0)
-                width = gw_cube if is_cube_boundary else gw_sticker
-                draw.line(
-                    [(0, y), (stickers_w, y)],
-                    fill=grid_color,
-                    width=width
-                )
+                for sr in range(n):
+                    for sc in range(n):
+                        sticker = cube["stickers"][sr][sc]
+                        color = sticker.get("assigned_color", (200, 200, 200))
 
-        print(f"Blueprint assembled: {stickers_w}×{stickers_h} pixels")
-        if draw_grid_lines:
-            print(f"Grid lines added (cube: {gw_cube}px, sticker: {gw_sticker}px)")
+                        # Position with both sticker and cube padding
+                        x1 = current_x + sc * (sticker_size + pad_sticker) + pad_sticker
+                        y1 = current_y + sr * (sticker_size + pad_sticker) + pad_sticker
+                        x2 = x1 + sticker_size
+                        y2 = y1 + sticker_size
+
+                        draw.rectangle([x1, y1, x2, y2], fill=color)
+                        filled += 1
+
+                # Move to next cube horizontally
+                current_x += n * sticker_size + (n - 1) * pad_sticker
+
+            # Move to next cube row
+            current_y += n * sticker_size + (n - 1) * pad_sticker
+
+        print(f"Filled {filled} stickers with "
+              f"sticker padding={pad_sticker}px and cube padding={pad_cube}px")
 
         return final_img
-
-
-# ── Quick standalone test ─────────────────────────────────────────────────────
-if __name__ == "__main__":
-    # Minimal dummy data to test rendering
-    dummy_sticker = {
-        "pixel_region": (0, 0, 50, 50),
-        "assigned_color": (255, 0, 0)
-    }
-    dummy_cube = {"stickers": [[dummy_sticker]]}
-    dummy_mosaic = [[dummy_cube]]
-
-    dummy_metadata = {
-        "sticker_grid": (50, 50),
-        "num_cubes": (1, 1),
-        "stickers_per_cube": 1
-    }
-
-    builder = Builder()
-    img = builder.build(
-        colored_mosaic=dummy_mosaic,
-        metadata=dummy_metadata,
-        draw_grid_lines=True,
-        grid_color=(0, 0, 0),
-        grid_width_cube=6,
-        grid_width_sticker=2
-    )
-
-    img.show(title="Builder Test – Single Red Sticker with Grid")
