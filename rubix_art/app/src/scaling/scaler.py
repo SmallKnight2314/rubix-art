@@ -1,10 +1,7 @@
 # src/scaling/scaler.py
 """
-Scaler – Responsible for calculating the optimal discrete Rubik's cube grid
-and resizing the input image to exactly match that sticker resolution.
-
-Goal: Maximize resolution (use as many stickers/cubes as possible) while
-      fitting within the desired physical size and never exceeding it.
+Scaler – Calculates the largest feasible grid that fits within given max physical width & height.
+Preserves aspect ratio. Returns a small scaled preview + metadata for layout.
 """
 
 from pathlib import Path
@@ -14,119 +11,63 @@ import numpy as np
 
 
 class Scaler:
-    """
-    Calculates optimal number of cubes and stickers, then resizes image accordingly.
-
-    Usage in ImageMaker:
-        scaler = Scaler(large_side_meters=..., cube_edge_meters=..., cube_n=...)
-        scaled_image, metadata = scaler.scale(image_path)
-    """
-
     def __init__(
         self,
-        large_side_meters: float,
+        max_width_meters: float,
+        max_height_meters: float,
         cube_edge_meters: float,
-        cube_n: int,                    # 3 → 3×3×3 cube (3 stickers per edge)
-        sampling_factor: int = 4
+        cube_n: int,
     ):
-        """
-        Args:
-            large_side_meters:  Desired physical size of the **longer** side (meters)
-            cube_edge_meters:   Physical edge length of one Rubik's cube (e.g. 0.056)
-            cube_n:             Number of stickers along one cube edge (3,4,5…)
-        """
-        if large_side_meters <= 0:
-            raise ValueError("large_side_meters must be > 0")
+        if max_width_meters <= 0 or max_height_meters <= 0:
+            raise ValueError("max_width_meters and max_height_meters must be > 0")
         if cube_edge_meters <= 0:
             raise ValueError("cube_edge_meters must be > 0")
         if cube_n < 2:
             raise ValueError("cube_n must be ≥ 2")
 
-        self.large_side_m = large_side_meters
-        self.cube_m       = cube_edge_meters
-        self.stickers_per_cube = cube_n     # usually 3,4,5,6,7
-        self.sampling_factor = max(1, sampling_factor)
+        self.max_w_m = max_width_meters
+        self.max_h_m = max_height_meters
+        self.cube_m  = cube_edge_meters
+        self.n       = cube_n  # stickers per cube edge
 
     def scale(self, image_path: Union[str, Path]) -> Tuple[Image.Image, Dict]:
-        """
-        Main method: resize image to optimal sticker grid.
-
-        Returns:
-            (scaled_image: PIL.Image,
-             metadata: dict with grid dimensions and other info)
-        """
         path = Path(image_path)
         if not path.is_file():
             raise FileNotFoundError(f"Image not found: {path}")
 
-        # ── 1. Load original image and get aspect ratio ───────────────────────
         original = Image.open(path)
         orig_w, orig_h = original.size
-        aspect_ratio = orig_w / orig_h
+        aspect = orig_w / orig_h
 
-        # ── 2. Calculate maximum number of cubes we can fit on the long side ──
-        max_cubes_long = int(np.floor(self.large_side_m / self.cube_m))
-        if max_cubes_long < 1:
-            raise ValueError(
-                f"Desired size {self.large_side_m}m too small for cubes of {self.cube_m}m"
-            )
+        # Max cubes that fit in each dimension
+        max_c_w = int(np.floor(self.max_w_m / self.cube_m))
+        max_c_h = int(np.floor(self.max_h_m / self.cube_m))
 
-        # ── 3. Decide orientation: which side gets max_cubes_long ─────────────
+        # Fit within both constraints while preserving aspect
         if orig_w >= orig_h:
-            # Landscape / square → width is long side
-            num_cubes_w = max_cubes_long
-            num_cubes_h = int(np.floor(num_cubes_w / aspect_ratio))
+            c_w = max_c_w
+            c_h = min(max_c_h, int(np.floor(c_w / aspect)))
         else:
-            # Portrait → height is long side
-            num_cubes_h = max_cubes_long
-            num_cubes_w = int(np.floor(num_cubes_h * aspect_ratio))
+            c_h = max_c_h
+            c_w = min(max_c_w, int(np.floor(c_h * aspect)))
 
-        # Ensure we have at least 1 cube in each direction
-        num_cubes_w = max(1, num_cubes_w)
-        num_cubes_h = max(1, num_cubes_h)
+        c_w = max(1, c_w)
+        c_h = max(1, c_h)
 
-        # ── 4. Convert cubes → sticker pixels ─────────────────────────────────
-        stickers_w = num_cubes_w * self.stickers_per_cube
-        stickers_h = num_cubes_h * self.stickers_per_cube
+        stickers_w = c_w * self.n
+        stickers_h = c_h * self.n
 
-        # ── 5. Resize image to exact sticker grid (high quality down/up-sampling) ─
-        # LANCZOS is usually best for downscaling photos; BICUBIC also good
-        scaled_image = original.resize(
-            (stickers_w, stickers_h),
-            resample=Image.Resampling.LANCZOS
-        )
+        # Small preview version (used for grid layout & drawing)
+        preview = original.resize((stickers_w, stickers_h), Image.Resampling.LANCZOS)
 
-        # ── 6. Prepare metadata for downstream classes (splitter, builder, etc.) ─
         metadata = {
             "original_size":        (orig_w, orig_h),
-            "aspect_ratio":         aspect_ratio,
-            "num_cubes":            (num_cubes_w, num_cubes_h),
-            "total_cubes":          num_cubes_w * num_cubes_h,
-            "stickers_per_cube":    self.stickers_per_cube,
-            "sticker_grid":         (stickers_w, stickers_h),      # ← most important
-            "physical_size_m": {
-                "width":  num_cubes_w * self.cube_m,
-                "height": num_cubes_h * self.cube_m,
-            },
-            "scale_factor":         stickers_w / orig_w,           # approx
+            "num_cubes":            (c_w, c_h),
+            "sticker_grid":         (stickers_w, stickers_h),
+            "stickers_per_cube":    self.n,
+            "physical_size_m":      {"width": c_w * self.cube_m, "height": c_h * self.cube_m},
+            "scale_factor_w":       orig_w / stickers_w,   # crucial for super-sampling
+            "scale_factor_h":       orig_h / stickers_h,
         }
 
-        return scaled_image, metadata
-
-
-# ── Optional: small test / demo when running file directly ─────────────────────
-if __name__ == "__main__":
-    # Example usage (for development / debugging)
-    scaler = Scaler(
-        large_side_meters=2.4,
-        cube_edge_meters=0.056,
-        cube_n=3
-    )
-
-    try:
-        img, meta = scaler.scale("example/portrait.jpg")
-        print("Scaled to:", img.size)
-        print("Metadata:", meta)
-        # img.show()  # uncomment to visually check
-    except Exception as e:
-        print("Error:", e)
+        return preview, metadata
