@@ -1,7 +1,7 @@
 # main.py
 """
 Rubik's Cube Artwork Generator - GUI
-Connects to the ImageMaker pipeline.
+Connects to the ImageMaker pipeline (space-first version).
 """
 
 import tkinter as tk
@@ -9,9 +9,9 @@ from tkinter import ttk
 from tkinter import filedialog
 from tkinter import messagebox
 from PIL import Image, ImageTk
-from src.image_maker import ImageMaker          # adjust if needed (e.g. from image_maker import ...)
+from src.image_maker import ImageMaker
 import os
-# import webbrowser                             # uncomment if you want to auto-open result
+# import webbrowser                             # uncomment to auto-open result
 
 
 class RubiksArtworkApp:
@@ -35,8 +35,10 @@ class RubiksArtworkApp:
         self.full_image_path = ""                   # full path kept here
         self.preview_photo = None                   # prevents GC of preview image
 
-        self.desired_large_dim_m = tk.DoubleVar(value=2.0)
-        self.cube_edge_m = tk.DoubleVar(value=0.056)  # ≈5.6 cm – standard 3×3
+        # NEW: separate max width & height inputs
+        self.max_width_m   = tk.DoubleVar(value=3.0)   # reasonable default
+        self.max_height_m  = tk.DoubleVar(value=2.0)
+        self.cube_edge_m   = tk.DoubleVar(value=0.056)  # ≈5.6 cm – standard 3×3
         self.cube_type_var = tk.StringVar(value="3x3")
 
         # ── Layout ────────────────────────────────────────────────────────────
@@ -71,28 +73,35 @@ class RubiksArtworkApp:
         inputs.pack(fill=tk.X, pady=10)
 
         row = 0
-        ttk.Label(inputs, text="Largest side (meters):").grid(row=row, column=0, sticky="w", pady=6)
-        ttk.Entry(inputs, textvariable=self.desired_large_dim_m, width=12).grid(row=row, column=1, sticky="w")
+
+        # Max width (meters) – most common space constraint
+        ttk.Label(inputs, text="Max width (meters):").grid(row=row, column=0, sticky="w", pady=6)
+        ttk.Entry(inputs, textvariable=self.max_width_m, width=12).grid(row=row, column=1, sticky="w")
         row += 1
 
+        # Max height (meters)
+        ttk.Label(inputs, text="Max height (meters):").grid(row=row, column=0, sticky="w", pady=6)
+        ttk.Entry(inputs, textvariable=self.max_height_m, width=12).grid(row=row, column=1, sticky="w")
+        row += 1
+
+        # Cube type
         ttk.Label(inputs, text="Cube type:").grid(row=row, column=0, sticky="w", pady=6)
         cube_types = ["2x2", "3x3", "4x4", "5x5", "6x6", "7x7"]
         ttk.Combobox(inputs, textvariable=self.cube_type_var, values=cube_types,
                      state="readonly", width=10).grid(row=row, column=1, sticky="w")
         row += 1
 
+        # Cube edge length
         ttk.Label(inputs, text="Cube edge length (m):").grid(row=row, column=0, sticky="w", pady=6)
         ttk.Entry(inputs, textvariable=self.cube_edge_m, width=12).grid(row=row, column=1, sticky="w")
-        ttk.Label(inputs, text="(e.g. 0.056 for standard 3×3, often 0.060–0.065 for bigger cubes)").grid(
+        ttk.Label(inputs, text="(e.g. 0.056 for classic 3×3, 0.060–0.065 for bigger)").grid(
             row=row, column=2, sticky="w", padx=8)
         row += 1
 
-        ttk.Label(inputs, text="Sticker grid:").grid(row=row, column=0, sticky="w", pady=6)
-        ttk.Label(inputs, text="auto (n×n per cube)").grid(row=row, column=1, columnspan=2, sticky="w")
-
+        # Status line
         self.status_var = tk.StringVar(value="Ready. Please select an image.")
         ttk.Label(inputs, textvariable=self.status_var, foreground="gray", wraplength=320).grid(
-            row=row+1, column=0, columnspan=3, pady=12, sticky="w")
+            row=row, column=0, columnspan=3, pady=12, sticky="w")
 
     def _build_preview_section(self, parent):
         preview_frame = ttk.LabelFrame(parent, text=" Original Image Preview ", padding=10)
@@ -117,7 +126,7 @@ class RubiksArtworkApp:
         try:
             img = Image.open(file_path)
             img.thumbnail((380, 380), Image.Resampling.LANCZOS)
-            self.preview_photo = ImageTk.PhotoImage(img)       # keep ref → no GC
+            self.preview_photo = ImageTk.PhotoImage(img)
 
             self.preview_label.configure(image=self.preview_photo, text="")
             self.image_path.set(os.path.basename(file_path))
@@ -136,41 +145,46 @@ class RubiksArtworkApp:
             return
 
         try:
-            large_m = self.desired_large_dim_m.get()
-            edge_m  = self.cube_edge_m.get()
-            n_str   = self.cube_type_var.get()
-            n       = int(n_str.split("x")[0])
+            max_w = self.max_width_m.get()
+            max_h = self.max_height_m.get()
+            edge  = self.cube_edge_m.get()
+            n_str = self.cube_type_var.get()
+            n     = int(n_str.split("x")[0])
 
-            if large_m <= 0 or edge_m <= 0 or n < 2:
-                raise ValueError("Dimensions must be positive and cube n ≥ 2")
+            if max_w <= 0 or max_h <= 0 or edge <= 0 or n < 2:
+                raise ValueError("All dimensions must be positive and cube n ≥ 2")
 
-            self.status_var.set("Processing... please wait (may take a while)")
+        except Exception as e:
+            messagebox.showerror("Invalid Input", f"Please check values:\n{e}")
+            return
 
-            # ── Run pipeline ──────────────────────────────────────────────────
+        self.status_var.set("Processing... (using super-sampling from original image)")
+
+        try:
             maker = ImageMaker(self.full_image_path)
             output_path = maker.make(
-                large_side_meters   = large_m,
-                cube_edge_meters    = edge_m,
-                cube_n              = n,
-                # show_preview     = True,             # useful during dev
-                # output_path      = None,             # auto = original_name_rubiks_blueprint.png
+                max_width_meters   = max_w,
+                max_height_meters  = max_h,
+                cube_edge_meters   = edge,
+                cube_n             = n,
+                show_preview       = True,           # useful for testing
+                draw_grid_lines  = True,          # optional
+                # palette          = custom_palette, # if you add palette choice later
             )
 
-            msg = f"Blueprint generated!\n\nSaved to:\n{output_path}"
+            msg = f"Blueprint generated successfully!\n\nSaved to:\n{output_path}"
             messagebox.showinfo("Success", msg)
             self.status_var.set(f"Done – {output_path.name}")
 
-            # Optional: auto open result (uncomment if desired)
+            # Optional: auto-open in default viewer
             # webbrowser.open(f"file://{output_path}")
 
-        except ValueError as ve:
-            messagebox.showerror("Input Error", str(ve))
-            self.status_var.set("Invalid input values")
         except Exception as e:
             messagebox.showerror("Processing Error", f"Failed to generate blueprint:\n{str(e)}")
             self.status_var.set("Error during generation")
+
         finally:
-            self.process_btn.config(state="normal")  # always re-enable
+            self.process_btn.config(state="normal")  # re-enable button
 
 
 if __name__ == "__main__":
