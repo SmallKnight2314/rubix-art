@@ -5,31 +5,26 @@ Coordinates the pipeline: Scaler → Splitter → Painter → Builder.
 """
 
 from pathlib import Path
-from typing import Optional, Union, Tuple, Dict
+from typing import Optional, Union, Dict, Tuple
 
 from PIL import Image
 
 # Import classes from their respective submodules
 from src.scaling.scaler import Scaler
-from src.splitter.splitter import Splitter      # adjust filename if different
-from src.coloring.painter import Painter        # adjust filename if different
-from src.assembler.builder import Builder       # adjust filename if different
+from src.splitter.splitter import Splitter
+from src.coloring.painter import Painter
+from src.assembler.builder import Builder
 
 
 class ImageMaker:
     """
     Main coordinator class.
     Create with image path, then call .make(...) with configuration.
-
-    Example:
-        maker = ImageMaker("photos/portrait.jpg")
-        output = maker.make(large_side_meters=2.4, cube_edge_meters=0.056, cube_n=3)
     """
 
     def __init__(
         self,
         image_path: Union[str, Path],
-        # Dependency injection – mostly for testing/mocking
         scaler_class=Scaler,
         splitter_class=Splitter,
         painter_class=Painter,
@@ -44,35 +39,32 @@ class ImageMaker:
         self.painter_class  = painter_class
         self.builder_class  = builder_class
 
-        # Will be filled during .make()
         self.scaled_image: Optional[Image.Image] = None
         self.metadata: Optional[Dict] = None
 
     def make(
         self,
-        large_side_meters: float,
+        max_width_meters: float,          # ← renamed
+        max_height_meters: float,         # ← new
         cube_edge_meters: float,
         cube_n: int,
         output_path: Optional[Union[str, Path]] = None,
-        palette: Optional[list[tuple[int, int, int]]] = None,
+        palette: Optional[list[tuple[int,int,int]]] = None,
         show_preview: bool = False,
         draw_grid_lines: bool = True,
-    ) -> Path:
-        """
-        Execute the full generation pipeline.
+        ) -> Path:
+        if max_width_meters <= 0 or max_height_meters <= 0 or cube_edge_meters <= 0 or cube_n < 2:
+            raise ValueError("Invalid dimensions")
 
-        Returns:
-            Path to the saved blueprint image
-        """
-        if large_side_meters <= 0 or cube_edge_meters <= 0 or cube_n < 2:
-            raise ValueError("Invalid physical dimensions or cube size")
+        print(f"Starting – max space {max_width_meters:.2f}×{max_height_meters:.2f} m | {cube_n}×{cube_n} cubes")
 
-        print(f"Starting mosaic generation for: {self.image_path.name}")
-        print(f"Target: {large_side_meters:.2f} m long side | {cube_n}×{cube_n} cubes")
+        # Load original high-res once
+        original_image = Image.open(self.image_path).convert("RGB")
 
-        # ── 1. Scale image to sticker-perfect resolution ──────────────────────
+        # Scale (now uses max w/h)
         scaler = self.scaler_class(
-            large_side_meters=large_side_meters,
+            max_width_meters=max_width_meters,
+            max_height_meters=max_height_meters,
             cube_edge_meters=cube_edge_meters,
             cube_n=cube_n,
         )
@@ -80,58 +72,58 @@ class ImageMaker:
 
         w, h = self.scaled_image.size
         cw, ch = self.metadata["num_cubes"]
-        print(f"Scaled to {w}×{h} px  →  {cw}×{ch} cubes  "
-              f"({cw*cube_n}×{ch*cube_n} stickers)")
+        print(f"Grid: {cw}×{ch} cubes → {w}×{h} stickers | physical ≈ {self.metadata['physical_size_m']['width']:.2f}×{self.metadata['physical_size_m']['height']:.2f} m")
 
-        # ── 2. Split into nested structure (cubes → faces → stickers) ─────────
+        # Split
         splitter = self.splitter_class(cube_n=cube_n)
-        mosaic_structure = splitter.split(
-            self.scaled_image,
-            self.metadata
+        mosaic_structure = splitter.split(self.scaled_image, self.metadata)
+
+        # Paint – now with original + metadata
+        painter = self.painter_class(palette=palette)
+        colored_mosaic = painter.paint(
+            mosaic_structure=mosaic_structure,
+            original_image=original_image,
+            metadata=self.metadata
         )
 
-        # ── 3. Assign closest Rubik's color to each sticker region ────────────
-        painter = self.painter_class(palette=palette)  # None = default palette
-        colored_mosaic = painter.paint(mosaic_structure)
-
-        # ── 4. Reassemble into final blueprint image ──────────────────────────
+        # Build & save (unchanged)
         builder = self.builder_class()
         final_image = builder.build(
             colored_mosaic=colored_mosaic,
             metadata=self.metadata,
-            draw_grid_lines=draw_grid_lines,
-            # You can add more builder options later (grid color, thickness, etc.)
+            sticker_padding=2,      # thin dark border around each sticker
+            cube_padding=6,         # thicker border around each full cube
+            padding_color=(40, 40, 40),  # dark grey
+            background_color=(220, 220, 220)
         )
 
-        # ── 5. Determine output path & save ───────────────────────────────────
         if output_path is None:
-            output_path = self.image_path.with_stem(
-                self.image_path.stem + "_rubiks_blueprint"
-            ).with_suffix(".png")
+            output_path = self.image_path.with_stem(self.image_path.stem + "_rubiks_blueprint").with_suffix(".png")
         else:
             output_path = Path(output_path)
 
-        final_image.save(output_path, "PNG")
-        print(f"Blueprint saved: {output_path}")
+        final_image.save(output_path)
+        print(f"Saved: {output_path}")
 
         if show_preview:
-            try:
-                final_image.show(title="Generated Rubik's Blueprint")
-            except Exception as e:
-                print(f"Could not open preview: {e}")
+            final_image.show(title="Rubik's Blueprint")
 
         return output_path
 
 
-# ── Quick test / demo when running the file directly ────────────────────────────
+# ── Quick test / demo ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     try:
-        maker = ImageMaker("example/portrait.jpg")
+        maker = ImageMaker("example/portrait.jpg")  # ← replace with real path
         result_path = maker.make(
             large_side_meters=2.0,
             cube_edge_meters=0.056,
             cube_n=3,
             show_preview=True,
+            # Example: very clean look (recommended for small mosaics)
+            grid_width_cube=2,
+            grid_width_sticker=0,
+            grid_color=(100, 100, 100),
         )
         print("Done. Output:", result_path)
     except Exception as e:
