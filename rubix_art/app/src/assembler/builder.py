@@ -1,96 +1,82 @@
 # src/assembler/builder.py
 """
-Builder – Creates a blueprint where:
-- Each sticker has thin dark padding around it (like cube plastic edges)
-- Each full cube (3×3 / 4×4 / … block) has thicker padding around it
-No lines drawn on top → all separation comes from padding (natural look)
+Builder – Tight canvas version (no excess space on right or bottom).
+Mosaic is perfectly centered, with thin padding around stickers and thicker padding around full cubes.
+Ready for future labels/stats.
 """
 
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 from PIL import Image, ImageDraw
 
 
 class Builder:
     def __init__(self):
-        self.default_background = (255, 255, 255)
-        self.default_sticker_padding = 2          # thin padding around each sticker
-        self.default_cube_padding    = 6          # thicker padding around whole cube
-        self.default_padding_color   = (40, 40, 40)  # dark grey
+        self.default_sticker_padding = 2          # thin dark border around each sticker
+        self.default_cube_padding    = 6          # thicker border around each full cube
+        self.default_padding_color   = (35, 35, 35)  # dark grey
+        self.default_outer_margin    = 40         # space for future cube counts / scale markers
 
     def build(
         self,
         colored_mosaic: List[List[Dict]],
         metadata: Dict[str, Any],
-        background_color: Tuple[int, int, int] = None,
+        background_color: Tuple[int, int, int] = (255, 255, 255),
         
-        # Padding controls
         sticker_padding: int = None,
         cube_padding: int = None,
         padding_color: Tuple[int, int, int] = None,
+        outer_margin: int = None,
     ) -> Image.Image:
         stickers_w, stickers_h = metadata["sticker_grid"]
         num_cubes_w, num_cubes_h = metadata["num_cubes"]
-        n = metadata.get("stickers_per_cube", 3)
+        n = metadata.get("stickers_per_cube", 3)          # 3 for 3x3, 4 for 4x4, etc.
 
         sticker_size = stickers_w // (num_cubes_w * n)
-        if sticker_size * num_cubes_w * n != stickers_w or sticker_size * num_cubes_h * n != stickers_h:
-            raise ValueError("Sticker grid not divisible by cubes")
 
         # Use defaults or overrides
-        bg_color       = background_color or self.default_background
-        pad_sticker    = sticker_padding if sticker_padding is not None else self.default_sticker_padding
-        pad_cube       = cube_padding    if cube_padding    is not None else self.default_cube_padding
-        pad_color      = padding_color   if padding_color   is not None else self.default_padding_color
+        pad_sticker = sticker_padding if sticker_padding is not None else self.default_sticker_padding
+        pad_cube    = cube_padding    if cube_padding    is not None else self.default_cube_padding
+        pad_color   = padding_color   if padding_color   is not None else self.default_padding_color
+        pad_outer   = outer_margin    if outer_margin    is not None else self.default_outer_margin
 
-        # ── Calculate total canvas size with padding ─────────────────────────
-        total_sticker_pad_w = (num_cubes_w * n - 1) * pad_sticker + num_cubes_w * pad_cube * 2
-        total_sticker_pad_h = (num_cubes_h * n - 1) * pad_sticker + num_cubes_h * pad_cube * 2
+        # Size of one full cube block (including sticker padding)
+        block_w = n * sticker_size + (n - 1) * pad_sticker
+        block_h = n * sticker_size + (n - 1) * pad_sticker
 
-        canvas_w = stickers_w + total_sticker_pad_w + pad_cube * 2   # extra outer padding
-        canvas_h = stickers_h + total_sticker_pad_h + pad_cube * 2
+        # EXACT canvas size (no excess space!)
+        total_w = num_cubes_w * block_w + (num_cubes_w - 1) * pad_cube + 2 * pad_outer
+        total_h = num_cubes_h * block_h + (num_cubes_h - 1) * pad_cube + 2 * pad_outer
 
-        final_img = Image.new("RGB", (canvas_w, canvas_h), color=bg_color)
+        final_img = Image.new("RGB", (total_w, total_h), color=background_color)
         draw = ImageDraw.Draw(final_img)
 
-        # ── Place each sticker with padding ──────────────────────────────────
         filled = 0
-        current_y = pad_cube  # start with outer cube padding
+        y = pad_outer
 
         for cube_r in range(num_cubes_h):
-            current_x = pad_cube
-
-            # Add cube padding between cube rows (except first)
+            x = pad_outer
             if cube_r > 0:
-                current_y += pad_cube
+                y += pad_cube
 
             for cube_c in range(num_cubes_w):
                 cube = colored_mosaic[cube_r][cube_c]
-
-                # Add cube padding between cubes horizontally (except first)
                 if cube_c > 0:
-                    current_x += pad_cube
+                    x += pad_cube
 
                 for sr in range(n):
                     for sc in range(n):
                         sticker = cube["stickers"][sr][sc]
                         color = sticker.get("assigned_color", (200, 200, 200))
 
-                        # Position with both sticker and cube padding
-                        x1 = current_x + sc * (sticker_size + pad_sticker) + pad_sticker
-                        y1 = current_y + sr * (sticker_size + pad_sticker) + pad_sticker
-                        x2 = x1 + sticker_size
-                        y2 = y1 + sticker_size
+                        sx = x + sc * (sticker_size + pad_sticker) + pad_sticker
+                        sy = y + sr * (sticker_size + pad_sticker) + pad_sticker
 
-                        draw.rectangle([x1, y1, x2, y2], fill=color)
+                        draw.rectangle([sx, sy, sx + sticker_size, sy + sticker_size], fill=color)
                         filled += 1
 
-                # Move to next cube horizontally
-                current_x += n * sticker_size + (n - 1) * pad_sticker
+                x += block_w
 
-            # Move to next cube row
-            current_y += n * sticker_size + (n - 1) * pad_sticker
+            y += block_h
 
-        print(f"Filled {filled} stickers with "
-              f"sticker padding={pad_sticker}px and cube padding={pad_cube}px")
-
+        print(f"Blueprint created: {total_w}×{total_h} px | {num_cubes_w}×{num_cubes_h} cubes")
         return final_img
